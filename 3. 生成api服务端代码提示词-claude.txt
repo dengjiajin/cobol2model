@@ -1,0 +1,152 @@
+我需要一个基于python的服务端软件，提供如下功能：
+读取bnmp_model.db数据库文件中的两个表：
+create table main.bnmp_element_relations
+(
+    relation_id       TEXT
+        primary key,
+    source_element_id TEXT not null
+        references main.bnmp_elements,
+    target_element_id TEXT not null
+        references main.bnmp_elements,
+    relation_type     TEXT not null,
+    relation_order    INTEGER,
+    description       TEXT,
+    created_at        TEXT default CURRENT_TIMESTAMP
+);
+
+create index main.idx_relation_type
+    on main.bnmp_element_relations (relation_type);
+
+create index main.idx_source_element
+    on main.bnmp_element_relations (source_element_id);
+
+create index main.idx_target_element
+    on main.bnmp_element_relations (target_element_id);
+
+create table main.bnmp_elements
+(
+    element_id          TEXT
+        primary key,
+    element_type        TEXT not null,
+    element_name        TEXT not null,
+    element_name_cn     TEXT,
+    description         TEXT,
+    description_cn      TEXT,
+    table_name          TEXT,
+    entity_summary      TEXT,
+    field_name          TEXT,
+    field_type          TEXT,
+    field_length        TEXT,
+    field_rules         TEXT,
+    foreign_key_ref     TEXT,
+    parent_entity_id    TEXT,
+    cobol_file_name     TEXT,
+    program_id          TEXT,
+    task_logic          TEXT,
+    cobol_snippet       TEXT,
+    step_logic          TEXT,
+    data_operation_type TEXT,
+    data_operation_desc TEXT,
+    step_cobol_snippet  TEXT,
+    created_at          TEXT default CURRENT_TIMESTAMP,
+    updated_at          TEXT default CURRENT_TIMESTAMP
+);
+
+create index main.idx_element_type
+    on main.bnmp_elements (element_type);
+
+
+提供2个restful API接口：
+        接口功能描述：
+		输入：Cobol代码文件路径
+		输出：所有业务建模元素清单
+		
+		通过Cobol代码利用大模型按照如下方法分析识别元素：
+		      
+	基本信息
+		Path： /api/py/extract/keyword
+
+		Method： POST
+
+		接口描述：
+
+		请求参数
+		Headers
+
+		参数名称	参数值	是否必须	示例	备注
+		Content-Type	application/x-www-form-urlencoded	是		
+		Body
+
+		参数名称	参数类型	是否必须	示例		备注
+		filePath	text		是		文件路径
+		option		text		是		支持的选项类型	业务实体
+										实体属性
+										流程
+										任务
+										步骤
+	返回数据
+		返回提取的关键词JSON数组
+		示例：
+		[
+		    {
+			"详细业务规则": "必须输入交易金额、是否代理、摘要等关键字段。",
+			"顺序": 6,
+			"description": "根据反显页面，客户输入支取密码，柜员录入【交易金额、是否代理、摘要】等业务要素提交。",
+			"业务规则形式": "内嵌",
+			"source": [
+			    {
+				"extracted_source": "6. 根据反显页面，客户输入支取密码，柜员录入【交易金额、是否代理、摘要】等业务要素提交。",
+				"description": "\n**流程图**：\n\n![](media/image1.png)\n\n![](media/image2.png)![](media/image3.png)(注：授权和客户确认的顺序以操作步骤中文字描述为准)\n\n**操作步骤：**\n\n1. 柜员审核客户申请资料的真实性、合规性，资料不合规要求客户重新提供资料。\n2. 点击【行内实时转账】菜单或在搜索栏内模糊查询或输入交易码【\\*\\*\\*\\*】,进入交易页面。\n3. 进入行内实时转账页面后，显示统一入口主页面的要素，柜员通过读取介质信息获取账户信息和客户信息。\n4. 系统判断该账户为借记卡，在柜员不输入子账户序号的情况下，系统返显其产品码名称及借记卡转账取款页面相应的业务要素字段。\n5. 系统判断该账户为个人借记卡，且柜员选择或输入了外币活期子账户序号的情况下，系统返显其产品码名称及借记卡转账取款页面相应的业务要素字段。\n6. 根据反显页面，客户输入支取密码，柜员录入【交易金额、是否代理、摘要】等业务要素提交。\n7. 客户在柜外清上确认交易信息是否正确，若不正确，系统提示柜员修改交易信息，客户确认信息后提交后系统判断是否授权。\n8. 需要授权则提交授权。授权不通过的退回交易页面，柜员重新审核物料或者修改交易信息后重新提交授权；授权通过后或无须授权的情况，提交后台进行账务处理。\n9. 后台记账处理成功后反显【交易流水号、转入方账户余额】信息并生成电子凭证，提示客户签字。\n10. 客户签字后系统自动保存电子凭证，柜员选择推送电子客户回单或打印客户回单交付客户，退还客户介质，交易结束。系统登记交易日志，更新账户余额，生成账户明细。\n\n**交易页面**\n\n1. 主页面\n\n![](media/image4.png)\n\n2.借记卡转账取款页面\n\n读卡后系统判断为借记卡且未输入子账户序号时；或者系统判断该账户为个人借记卡，且柜员选择或输入了外币活期子账户序号的情况下，反显借记卡转账取款页面。\n\n![](media/image5.png)\n\n![](media/image6.png)\n\n3.输出项页面\n\n交易成功，系统提示“交易成功”,展示输出 +项页面。\n\n![](media/image7.png)\n\n",
+				"type": "业务需求",
+				"name": "1.1．行内实时转账(借记卡转账取款)~>1.1.2．业务流程"
+			    }
+			],
+			"type": "工作事项",
+			"前序工作事项": "行内实时转账(借记卡转账取款)-系统判断个人借记卡外币子账户并返显页面",
+			"所属候选活动": "行内实时转账(借记卡转账取款)",
+			"操作类型": "新增",
+			"前提条件": "页面已正确返显交易要素",
+			"操作数据元素": "交易金额, 是否代理, 摘要, 支取密码",
+			"name": "行内实时转账(借记卡转账取款)-客户输入密码并柜员录入交易信息",
+			"岗位": "柜员, 客户"
+		    }
+		]
+   b. 元素关系识别生成接口
+	基本信息
+		Path： /api/py/generate/connect
+
+		Method： GET
+
+	接口描述：
+
+	请求参数
+		Query
+
+		参数名称	是否必须	示例	备注
+		majorElements	是	[
+		{
+		"type": "业务实体",
+		"id": "608895854224343040",
+		"code": "ent-000472",
+		"name": "个人存款产品合约",
+		"description": "个人存款产品的合约，包含存款的具体条款和条件。"
+		}
+		]	主元素JSON字符串
+		minorElements	是	[
+		{
+		"type": "实体属性",
+		"code": "atr-000003",
+		"name": "联名3",
+		"description": "6. 生成主订单、子订单信息，订单状态：未支付；"
+		},
+		{
+		"type": "实体属性",
+		"code": "atr-000004",
+		"name": "联名4",
+		"description": "6. 生成主订单、子订单信息，订单状态：未支付；"
+		}
+		]	次元素JSON字符串
+		option	是	业务实体-实体属性
+		产品组件-产品条件	连接选项
+	返回数据
+		名称	类型	是否必须	默认值	备注	其他信息
