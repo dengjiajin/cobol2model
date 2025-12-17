@@ -52,7 +52,7 @@ OPTION_TYPE_MAP = {
     "业务实体": "ENTITY",
     "实体属性": "ATTRIBUTE",
     "流程": "PROCESS",
-    "任务": "TASK",
+    "工作事项": "TASK",
     "步骤": "STEP"
 }
 
@@ -451,7 +451,7 @@ async def extract_keyword(
 @app.get("/api/py/extract/keyword2")
 async def extract_keyword2(
         fileName: str = Query(None, description="COBOL文件名（可选）。不传则不按文件过滤"),
-        option: str = Query(None, description="选项（可选）。支持：业务实体、实体属性、流程、任务、步骤；或 工作事项(等同任务)。不传则不按类型过滤")
+        option: str = Query(None, description="选项（可选）。支持：业务实体、实体属性、流程、工作事项、步骤。不传则不按类型过滤")
 ):
     """
     元素提取接口（GET）- keyword2
@@ -461,13 +461,7 @@ async def extract_keyword2(
     2) 全没传 -> 查全部
     3) 传了一个 -> where 一个
     4) 两个都传 -> where 两个（AND：cobol_file_name + element_type）
-
-    兼容映射：option=工作事项 等同于 任务（TASK）
     """
-    # 兼容调用方：工作事项 == 任务
-    if option == "工作事项":
-        option = "任务"
-
     logger.info(f"元素提取请求(keyword2): fileName={fileName}, option={option}")
 
     # 检查数据库是否存在
@@ -483,7 +477,7 @@ async def extract_keyword2(
             if option not in OPTION_TYPE_MAP:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}，以及 工作事项"
+                    detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}"
                 )
             element_type = OPTION_TYPE_MAP[option]
 
