@@ -53,6 +53,7 @@ OPTION_TYPE_MAP = {
     "实体属性": "ATTRIBUTE",
     "流程": "PROCESS",
     "工作事项": "TASK",
+    "任务": "TASK",
     "步骤": "STEP"
 }
 
@@ -461,6 +462,7 @@ async def extract_keyword2(
     2) 全没传 -> 查全部
     3) 传了一个 -> where 一个
     4) 两个都传 -> where 两个（AND：cobol_file_name + element_type）
+    5) 当查询业务实体或实体属性且提供COBOL文件名时，使用间接关联查询（文件→流程→任务→步骤→实体/属性）
     """
     logger.info(f"元素提取请求(keyword2): fileName={fileName}, option={option}")
 
@@ -472,25 +474,93 @@ async def extract_keyword2(
         )
 
     try:
-        element_type = None
-        if option:
-            if option not in OPTION_TYPE_MAP:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}"
-                )
-            element_type = OPTION_TYPE_MAP[option]
-
-        elements = get_elements_by_cobol_and_type(fileName, element_type)
-
-        # 格式化结果：如果传了 option，用它作为 type；否则按 element_type 反推
-        if option:
-            result = [format_element_for_response(elem, option) for elem in elements]
+        # 检查是否需要使用间接关联查询
+        use_indirect_query = False
+        if fileName and option and option in ["业务实体", "实体属性"]:
+            use_indirect_query = True
+        elif fileName and not option:
+            # 如果只传了fileName，先尝试直接查询流程
+            elements = get_elements_by_cobol_and_type(fileName, "PROCESS")
+            if not elements:
+                # 如果没有直接匹配的流程，尝试间接关联查询
+                use_indirect_query = True
+        
+        if use_indirect_query:
+            # 使用间接关联查询：COBOL文件 → 流程 → 任务 → 步骤 → 实体/属性
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 构建查询条件
+                if option:
+                    target_element_type = OPTION_TYPE_MAP[option]
+                    cursor.execute("""
+                                   SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
+                                          e4.description, e4.description_cn, e4.table_name, e4.field_name, 
+                                          e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
+                                          e4.parent_entity_id, e1.cobol_file_name
+                                   FROM bnmp_elements e1
+                                   JOIN bnmp_element_relations r1 ON e1.element_id = r1.source_element_id AND r1.relation_type = 'PROCESS_TASK'
+                                   JOIN bnmp_elements e2 ON r1.target_element_id = e2.element_id
+                                   JOIN bnmp_element_relations r2 ON e2.element_id = r2.source_element_id AND r2.relation_type = 'TASK_STEP'
+                                   JOIN bnmp_elements e3 ON r2.target_element_id = e3.element_id
+                                   JOIN bnmp_element_relations r3 ON e3.element_id = r3.source_element_id AND r3.relation_type IN ('STEP_ENTITY', 'STEP_ATTRIBUTE')
+                                   JOIN bnmp_elements e4 ON r3.target_element_id = e4.element_id
+                                   WHERE e1.cobol_file_name = ? AND e4.element_type = ?
+                                   ORDER BY e4.element_type, e4.element_name
+                                   """, (fileName, target_element_type))
+                else:
+                    # 查询所有相关实体和属性
+                    cursor.execute("""
+                                   SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
+                                          e4.description, e4.description_cn, e4.table_name, e4.field_name, 
+                                          e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
+                                          e4.parent_entity_id, e1.cobol_file_name
+                                   FROM bnmp_elements e1
+                                   JOIN bnmp_element_relations r1 ON e1.element_id = r1.source_element_id AND r1.relation_type = 'PROCESS_TASK'
+                                   JOIN bnmp_elements e2 ON r1.target_element_id = e2.element_id
+                                   JOIN bnmp_element_relations r2 ON e2.element_id = r2.source_element_id AND r2.relation_type = 'TASK_STEP'
+                                   JOIN bnmp_elements e3 ON r2.target_element_id = e3.element_id
+                                   JOIN bnmp_element_relations r3 ON e3.element_id = r3.source_element_id AND r3.relation_type IN ('STEP_ENTITY', 'STEP_ATTRIBUTE')
+                                   JOIN bnmp_elements e4 ON r3.target_element_id = e4.element_id
+                                   WHERE e1.cobol_file_name = ?
+                                   ORDER BY e4.element_type, e4.element_name
+                                   """, (fileName,))
+                
+                rows = cursor.fetchall()
+                result = []
+                
+                for row in rows:
+                    elem_dict = dict(row)
+                    # 使用format_element_for_response格式化结果
+                    if option:
+                        formatted = format_element_for_response(elem_dict, option)
+                    else:
+                        formatted = format_element_for_response(elem_dict)
+                    result.append(formatted)
+                
+                logger.info(f"间接关联查询完成(keyword2): 共{len(result)}个元素")
+                return result
         else:
-            result = [format_element_for_response(elem) for elem in elements]
+            # 使用原有查询逻辑
+            element_type = None
+            if option:
+                if option not in OPTION_TYPE_MAP:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}"
+                    )
+                element_type = OPTION_TYPE_MAP[option]
 
-        logger.info(f"元素提取完成(keyword2): 共{len(result)}个元素")
-        return result
+            elements = get_elements_by_cobol_and_type(fileName, element_type)
+
+            # 格式化结果：如果传了 option，用它作为 type；否则按 element_type 反推
+            if option:
+                result = [format_element_for_response(elem, option) for elem in elements]
+            else:
+                result = [format_element_for_response(elem) for elem in elements]
+
+            logger.info(f"直接查询完成(keyword2): 共{len(result)}个元素")
+            return result
 
     except HTTPException:
         raise

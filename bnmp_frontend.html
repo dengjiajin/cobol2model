@@ -887,6 +887,7 @@
             '实体属性': 'ATTRIBUTE',
             '流程': 'PROCESS',
             '任务': 'TASK',
+            '工作事项': 'TASK',
             '步骤': 'STEP'
         };
 
@@ -912,6 +913,11 @@
             try {
                 // 加载所有元素（后端接口为 GET /api/py/extract/keyword，参数使用 Query）
                 const elemResponse = await fetch(`${API_BASE}/api/py/extract/keyword?filePath=${encodeURIComponent('/tmp/dummy.cbl')}`);
+                
+                if (!elemResponse.ok) {
+                    throw new Error(`API请求失败: ${elemResponse.status} ${elemResponse.statusText}`);
+                }
+                
                 allElements = await elemResponse.json();
 
                 // 加载所有关系
