@@ -1,0 +1,261 @@
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CRTPERC01.
+
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SQLCA.
+    05  SQLCODE            PIC S9(9) COMP-4.
+
+01  WS-RESP-CODE           PIC X(06).
+01  WS-RESP-MSG            PIC X(50).
+01  WS-CUST-COUNT          PIC 9(5).
+01  WS-GENERATED-CUST-NO   PIC X(10).
+01  WS-CURRENT-DATE        PIC X(08).
+01  WS-CURRENT-TIME        PIC X(06).
+01  WS-BIRTH-DATE          PIC X(08).
+01  WS-GENDER-CD           PIC X(01).
+
+*> 客户基本信息工作区
+01  WS-CUST-BASIC-INFO.
+    05  WS-TENANT-NO       PIC X(10) VALUE '001'.
+    05  WS-CUST-NO         PIC X(10).
+    05  WS-CUST-TYP-CD     PIC X(01) VALUE '0'.
+    05  WS-CUST-LVL-CD     PIC X(02) VALUE '1'.
+    05  WS-CRTF-TYP-CD     PIC X(02).
+    05  WS-CRTF-NO         PIC X(20).
+    05  WS-CUST-NM         PIC X(50).
+    05  WS-VALID-FLG       PIC X(01) VALUE '1'.
+    05  WS-CRT-TELR-NO     PIC X(10).
+    05  WS-UPD-TELR-NO     PIC X(10).
+
+*> 个人客户信息工作区  
+01  WS-PER-CUST-INFO.
+    05  WS-PER-TENANT-NO   PIC X(10) VALUE '001'.
+    05  WS-PER-CUST-NO     PIC X(10).
+    05  WS-PER-GENDER-CD   PIC X(01).
+    05  WS-PER-BIRTH-DT    PIC X(08).
+    05  WS-PER-VALID-FLG   PIC X(01) VALUE '1'.
+    05  WS-PER-CRT-TELR-NO PIC X(10).
+    05  WS-PER-UPD-TELR-NO PIC X(10).
+
+LINKAGE SECTION.
+*> ========== 输入参数 ==========
+01  REQ-CRTF-NO            PIC X(20).     *> 证件号码
+01  REQ-CRTF-TYP-CD        PIC X(02).     *> 证件类型代码
+01  REQ-CUST-NM            PIC X(50).     *> 客户名称
+01  REQ-OPER-TELR-NO       PIC X(10).     *> 操作柜员号
+
+*> ========== 输出参数 ==========
+01  RESP-CODE              PIC X(06).
+01  RESP-MSG               PIC X(50).
+01  RESP-CUST-NO           PIC X(10).     *> 生成的客户号
+01  RESP-TENANT-NO         PIC X(10).     *> 租户编号
+
+PROCEDURE DIVISION 
+    USING REQ-CRTF-NO, REQ-CRTF-TYP-CD, REQ-CUST-NM,
+          REQ-OPER-TELR-NO, RESP-CODE, RESP-MSG,
+          RESP-CUST-NO, RESP-TENANT-NO.
+
+MAIN-LOGIC.
+    *> 初始化
+    MOVE 'E99999' TO WS-RESP-CODE
+    MOVE 'PROCESSING ERROR' TO WS-RESP-MSG
+    MOVE SPACES TO RESP-CUST-NO, RESP-TENANT-NO
+
+    *> 1) 参数基础校验
+    IF REQ-CRTF-NO = SPACES 
+       MOVE 'F20005' TO WS-RESP-CODE
+       MOVE '证件号码不能为空' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    IF REQ-CRTF-TYP-CD = SPACES 
+       MOVE 'F20004' TO WS-RESP-CODE
+       MOVE '证件类型代码不能为空' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    IF REQ-CUST-NM = SPACES 
+       MOVE 'F20007' TO WS-RESP-CODE
+       MOVE '客户名称不能为空' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 2) 检查客户是否已存在
+    EXEC SQL
+        SELECT COUNT(*), CUST_NO, TENANT_NO, CUST_NM
+          INTO :WS-CUST-COUNT, :WS-CUST-NO, :WS-TENANT-NO, :WS-CUST-NM
+          FROM CUSTOMER_BASIC_INFO
+         WHERE CRTF_TYP_CD = :REQ-CRTF-TYP-CD
+           AND CRTF_NO = :REQ-CRTF-NO
+           AND VALID_FLG = '1'
+         GROUP BY CUST_NO, TENANT_NO, CUST_NM
+    END-EXEC.
+
+    IF SQLCODE = 0 AND WS-CUST-COUNT > 0
+       *> 客户已存在，检查客户名称是否匹配
+       IF WS-CUST-NM = REQ-CUST-NM
+          *> 名称匹配，返回现有客户信息
+          MOVE WS-CUST-NO TO RESP-CUST-NO
+          MOVE WS-TENANT-NO TO RESP-TENANT-NO
+          MOVE '000000' TO WS-RESP-CODE
+          MOVE '客户已存在，返回现有客户信息' TO WS-RESP-MSG
+          GO TO EXIT-PROGRAM
+       ELSE
+          *> 名称不匹配，返回错误
+          MOVE 'F20008' TO WS-RESP-CODE
+          MOVE '证件号已存在但客户名称不匹配' TO WS-RESP-MSG
+          GO TO EXIT-PROGRAM
+       END-IF
+    END-IF.
+
+    *> 3) 开始事务
+    EXEC SQL START TRANSACTION END-EXEC
+    IF SQLCODE NOT = 0
+       MOVE 'E12001' TO WS-RESP-CODE
+       MOVE '事务启动失败' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 4) 生成客户号
+    PERFORM GENERATE-CUST-NO.
+
+    *> 5) 设置基本信息默认值
+    MOVE REQ-CRTF-TYP-CD TO WS-CRTF-TYP-CD
+    MOVE REQ-CRTF-NO TO WS-CRTF-NO
+    MOVE REQ-CUST-NM TO WS-CUST-NM
+    MOVE REQ-OPER-TELR-NO TO WS-CRT-TELR-NO
+    MOVE REQ-OPER-TELR-NO TO WS-UPD-TELR-NO
+
+    *> 6) 设置个人信息默认值
+    MOVE WS-CUST-NO TO WS-PER-CUST-NO
+    MOVE REQ-OPER-TELR-NO TO WS-PER-CRT-TELR-NO
+    MOVE REQ-OPER-TELR-NO TO WS-PER-UPD-TELR-NO
+
+    *> 7) 从身份证提取信息（如果是身份证）
+    IF REQ-CRTF-TYP-CD = '01'  *> 假设01代表身份证
+       PERFORM EXTRACT-ID-CARD-INFO
+    END-IF.
+
+    *> 8) 插入客户基本信息
+    EXEC SQL
+        INSERT INTO CUSTOMER_BASIC_INFO (
+            TENANT_NO, CUST_NO, CUST_TYP_CD, CUST_LVL_CD,
+            CRTF_TYP_CD, CRTF_NO, CUST_NM, VALID_FLG,
+            CRT_TELR_NO, UPD_TELR_NO, CRT_TM, UPD_TM
+        ) VALUES (
+            :WS-TENANT-NO, :WS-CUST-NO, :WS-CUST-TYP-CD, :WS-CUST-LVL-CD,
+            :WS-CRTF-TYP-CD, :WS-CRTF-NO, :WS-CUST-NM, :WS-VALID-FLG,
+            :WS-CRT-TELR-NO, :WS-UPD-TELR-NO, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+    END-EXEC.
+
+    IF SQLCODE NOT = 0
+       MOVE 'E12002' TO WS-RESP-CODE
+       MOVE '插入客户基本信息失败' TO WS-RESP-MSG
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 9) 插入个人客户信息
+    EXEC SQL
+        INSERT INTO PERSONAL_CUSTOMER_INFO (
+            TENANT_NO, CUST_NO, GENDER_CD, BIRTH_DT, VALID_FLG,
+            CRT_TELR_NO, UPD_TELR_NO, CRT_TM, UPD_TM
+        ) VALUES (
+            :WS-PER-TENANT-NO, :WS-PER-CUST-NO, :WS-PER-GENDER-CD, 
+            :WS-PER-BIRTH-DT, :WS-PER-VALID-FLG,
+            :WS-PER-CRT-TELR-NO, :WS-PER-UPD-TELR-NO, 
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+    END-EXEC.
+
+    IF SQLCODE NOT = 0
+       MOVE 'E12003' TO WS-RESP-CODE
+       MOVE '插入个人客户信息失败' TO WS-RESP-MSG
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 10) 提交事务
+    EXEC SQL COMMIT END-EXEC
+    IF SQLCODE NOT = 0
+       MOVE 'E12004' TO WS-RESP-CODE
+       MOVE '事务提交失败' TO WS-RESP-MSG
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 11) 成功返回
+    MOVE WS-CUST-NO TO RESP-CUST-NO
+    MOVE WS-TENANT-NO TO RESP-TENANT-NO
+    MOVE '000000' TO WS-RESP-CODE
+    MOVE '客户开立成功' TO WS-RESP-MSG.
+
+EXIT-PROGRAM.
+    MOVE WS-RESP-CODE TO RESP-CODE
+    MOVE WS-RESP-MSG TO RESP-MSG
+    EXIT PROGRAM.
+
+*> 生成客户号子程序
+GENERATE-CUST-NO.
+    *> 这里使用序列或时间戳生成客户号
+    *> 实际生产中可能调用专门的客户号生成服务
+    EXEC SQL
+        SELECT 'CUST' || LPAD(NEXTVAL FOR CUST_NO_SEQ, 6, '0')
+          INTO :WS-CUST-NO
+          FROM SYSIBM.SYSDUMMY1
+    END-EXEC.
+    
+    IF SQLCODE NOT = 0
+       *> 如果序列不存在，使用时间戳生成
+       MOVE FUNCTION CURRENT-DATE(1:8) TO WS-CURRENT-DATE
+       MOVE FUNCTION CURRENT-TIME(1:6) TO WS-CURRENT-TIME
+       STRING 'CUST' 
+              WS-CURRENT-DATE(3:6)
+              WS-CURRENT-TIME
+         INTO WS-CUST-NO
+       END-STRING
+    END-IF.
+
+*> 从身份证提取信息子程序
+EXTRACT-ID-CARD-INFO.
+    *> 检查身份证长度（15位或18位）
+    IF FUNCTION LENGTH(REQ-CRTF-NO) = 18 OR 
+       FUNCTION LENGTH(REQ-CRTF-NO) = 15
+       
+       *> 提取出生日期
+       IF FUNCTION LENGTH(REQ-CRTF-NO) = 18
+          *> 18位身份证：第7-14位是出生日期
+          MOVE REQ-CRTF-NO(7:8) TO WS-BIRTH-DATE
+       ELSE
+          *> 15位身份证：第7-12位是出生日期，补19
+          STRING '19' REQ-CRTF-NO(7:6)
+            INTO WS-BIRTH-DATE
+          END-STRING
+       END-IF
+       
+       *> 提取性别（18位：第17位，15位：第15位）
+       IF FUNCTION LENGTH(REQ-CRTF-NO) = 18
+          MOVE REQ-CRTF-NO(17:1) TO WS-GENDER-CD
+       ELSE
+          MOVE REQ-CRTF-NO(15:1) TO WS-GENDER-CD
+       END-IF
+       
+       *> 奇数为男性，偶数为女性
+       IF FUNCTION MOD(FUNCTION NUMVAL(WS-GENDER-CD), 2) = 0
+          MOVE '2' TO WS-PER-GENDER-CD  *> 女性
+       ELSE
+          MOVE '1' TO WS-PER-GENDER-CD  *> 男性
+       END-IF
+       
+       MOVE WS-BIRTH-DATE TO WS-PER-BIRTH-DT
+    ELSE
+       *> 非标准身份证格式，清空性别和生日
+       MOVE SPACES TO WS-PER-GENDER-CD
+       MOVE SPACES TO WS-PER-BIRTH-DT
+    END-IF.

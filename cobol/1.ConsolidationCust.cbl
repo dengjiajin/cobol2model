@@ -1,0 +1,181 @@
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CUSTMRG01.
+
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SQLCA.
+    05  SQLCODE            PIC S9(9) COMP-4.
+
+01  WS-RESP-CODE           PIC X(06).
+01  WS-RESP-MSG            PIC X(50).
+01  WS-UPDATE-COUNT        PIC 9(5).
+01  WS-CURRENT-DATE        PIC X(08).
+01  WS-CURRENT-TIME        PIC X(06).
+
+*> 客户账户信息表结构
+01  CUST-ACCT-INFO.
+    05  CAI-CUST-NO        PIC X(10).
+    05  CAI-AFS-PRODT-NO   PIC X(10).
+    05  CAI-BASE-PRODT-NO  PIC X(10).
+    05  CAI-MAIN-ACCT-NO   PIC X(20).
+    05  CAI-OPER-TYP-CD    PIC X(02).
+    05  CAI-RELA-SEQ-NO    PIC X(05).
+    05  CAI-ROUTE-TYP-CD   PIC X(02).
+    05  CAI-ROUTE-VAL      PIC X(20).
+    05  CAI-VALID-FLG      PIC X(01).
+    05  CAI-CRT-TELR-NO    PIC X(10).
+    05  CAI-UPD-TELR-NO    PIC X(10).
+    05  CAI-UPD-TM         PIC X(26).
+    05  CAI-CRT-TM         PIC X(26).
+
+LINKAGE SECTION.
+*> ========== 输入参数 ==========
+01  REQ-CUST-NO            PIC X(10).     *> 并入客户号
+01  REQ-MERGE-CUST-NO      PIC X(10).     *> 并出客户号
+01  REQ-OPER-TELR-NO       PIC X(10).     *> 操作柜员号
+01  REQ-TENANT-NO          PIC X(10).     *> 租户编号
+
+*> ========== 输出参数 ==========
+01  RESP-CODE              PIC X(06).
+01  RESP-MSG               PIC X(50).
+01  RESP-UPDATE-COUNT      PIC 9(5).
+
+PROCEDURE DIVISION 
+    USING REQ-CUST-NO, REQ-MERGE-CUST-NO, REQ-OPER-TELR-NO,
+          REQ-TENANT-NO, RESP-CODE, RESP-MSG, RESP-UPDATE-COUNT.
+
+MAIN-LOGIC.
+    *> 初始化响应码
+    MOVE 'E99999' TO WS-RESP-CODE
+    MOVE 'PROCESSING ERROR' TO WS-RESP-MSG
+    MOVE 0 TO WS-UPDATE-COUNT
+    MOVE 0 TO RESP-UPDATE-COUNT
+
+    *> 1) 参数基础校验
+    IF REQ-CUST-NO = SPACES OR REQ-CUST-NO = LOW-VALUES
+       MOVE 'F20001' TO WS-RESP-CODE
+       MOVE '并入客户号不能为空' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    IF REQ-MERGE-CUST-NO = SPACES OR REQ-MERGE-CUST-NO = LOW-VALUES
+       MOVE 'F20002' TO WS-RESP-CODE
+       MOVE '并出客户号不能为空' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 2) 检查并入客户是否存在
+    EXEC SQL
+        SELECT COUNT(*) INTO :WS-UPDATE-COUNT
+          FROM CUST_ACCT_INFO
+         WHERE CUST_NO = :REQ-CUST-NO
+           AND TENANT_NO = :REQ-TENANT-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE NOT = 0 OR WS-UPDATE-COUNT = 0
+       MOVE 'F20003' TO WS-RESP-CODE
+       MOVE '并入客户不存在或无效' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 3) 检查并出客户是否存在
+    EXEC SQL
+        SELECT COUNT(*) INTO :WS-UPDATE-COUNT
+          FROM CUST_ACCT_INFO
+         WHERE CUST_NO = :REQ-MERGE-CUST-NO
+           AND TENANT_NO = :REQ-TENANT-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE NOT = 0 OR WS-UPDATE-COUNT = 0
+       MOVE 'F20004' TO WS-RESP-CODE
+       MOVE '并出客户不存在或无效' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 4) 开始事务
+    EXEC SQL START TRANSACTION END-EXEC
+    IF SQLCODE NOT = 0
+       MOVE 'E12001' TO WS-RESP-CODE
+       MOVE '事务启动失败' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 5) 执行客户归并 - 更新账户路由信息
+    EXEC SQL
+        UPDATE CUST_ACCT_INFO
+           SET CUST_NO = :REQ-CUST-NO,
+               UPD_TELR_NO = :REQ-OPER-TELR-NO,
+               UPD_TM = CURRENT_TIMESTAMP
+         WHERE CUST_NO = :REQ-MERGE-CUST-NO
+           AND TENANT_NO = :REQ-TENANT-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE NOT = 0
+       MOVE 'E12002' TO WS-RESP-CODE
+       MOVE '客户归并更新失败' TO WS-RESP-MSG
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 6) 获取更新记录数
+    EXEC SQL
+        GET DIAGNOSTICS :WS-UPDATE-COUNT = ROW_COUNT
+    END-EXEC.
+
+    *> 7) 检查是否存在路由冲突
+    EXEC SQL
+        SELECT COUNT(*) INTO :RESP-UPDATE-COUNT
+          FROM CUST_ACCT_INFO CAI1
+         WHERE CAI1.CUST_NO = :REQ-CUST-NO
+           AND CAI1.TENANT_NO = :REQ-TENANT-NO
+           AND CAI1.VALID_FLG = '1'
+           AND EXISTS (SELECT 1 
+                         FROM CUST_ACCT_INFO CAI2
+                        WHERE CAI2.CUST_NO = :REQ-CUST-NO
+                          AND CAI2.TENANT_NO = :REQ-TENANT-NO
+                          AND CAI2.VALID_FLG = '1'
+                          AND CAI2.ROUTE_VAL = CAI1.ROUTE_VAL
+                          AND CAI2.ROUTE_TYP_CD = CAI1.ROUTE_TYP_CD
+                          AND CAI2.RELA_SEQ_NO != CAI1.RELA_SEQ_NO)
+    END-EXEC.
+
+    IF RESP-UPDATE-COUNT > 0
+       MOVE 'W20001' TO WS-RESP-CODE
+       STRING '客户归并完成，但存在' DELIMITED BY SIZE
+              RESP-UPDATE-COUNT DELIMITED BY SIZE
+              '条路由冲突记录' DELIMITED BY SIZE
+         INTO WS-RESP-MSG
+       END-STRING
+    ELSE
+       MOVE '000000' TO WS-RESP-CODE
+       STRING '客户归并成功，更新' DELIMITED BY SIZE
+              WS-UPDATE-COUNT DELIMITED BY SIZE
+              '条记录' DELIMITED BY SIZE
+         INTO WS-RESP-MSG
+       END-STRING
+    END-IF.
+
+    *> 8) 提交事务
+    EXEC SQL COMMIT END-EXEC
+    IF SQLCODE NOT = 0
+       MOVE 'E12003' TO WS-RESP-CODE
+       MOVE '事务提交失败' TO WS-RESP-MSG
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    MOVE WS-UPDATE-COUNT TO RESP-UPDATE-COUNT.
+
+EXIT-PROGRAM.
+    *> 设置返回参数
+    MOVE WS-RESP-CODE TO RESP-CODE
+    MOVE WS-RESP-MSG TO RESP-MSG
+    
+    EXIT PROGRAM.

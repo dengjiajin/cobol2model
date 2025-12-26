@@ -1,0 +1,313 @@
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MGMTCRT01.
+
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01  SQLCA.
+    05  SQLCODE            PIC S9(9) COMP-4.
+
+01  WS-RESP-CODE           PIC X(06).
+01  WS-RESP-MSG            PIC X(50).
+01  WS-RECORD-COUNT        PIC 9(5).
+01  WS-OPER-TYPE           PIC X(03).
+01  WS-CURRENT-DATE        PIC X(08).
+01  WS-CURRENT-TIME        PIC X(06).
+
+*> 客户账户路由信息工作区
+01  WS-CUST-ACCT-INFO.
+    05  WS-TENANT-NO       PIC X(10).
+    05  WS-CUST-NO         PIC X(10).
+    05  WS-AFS-PRODT-NO    PIC X(10).
+    05  WS-BASE-PRODT-NO   PIC X(10).
+    05  WS-MAIN-ACCT-NO    PIC X(20).
+    05  WS-OPER-TYP-CD     PIC X(02).
+    05  WS-RELA-SEQ-NO     PIC X(05).
+    05  WS-ROUTE-TYP-CD    PIC X(02).
+    05  WS-ROUTE-VAL       PIC X(20).
+    05  WS-VALID-FLG       PIC X(01) VALUE '1'.
+    05  WS-CRT-TELR-NO     PIC X(10).
+    05  WS-UPD-TELR-NO     PIC X(10).
+
+LINKAGE SECTION.
+*> ========== 输入参数 ==========
+01  REQ-TENANT-NO          PIC X(10).     *> 租户编号
+01  REQ-CUST-NO            PIC X(10).     *> 客户编号
+01  REQ-AFS-PRODT-NO       PIC X(10).     *> 可售产品编号
+01  REQ-BASE-PRODT-NO      PIC X(10).     *> 基础产品编号
+01  REQ-MAIN-ACCT-NO       PIC X(20).     *> 主账号
+01  REQ-OPER-TYP-CD        PIC X(02).     *> 操作类型代码
+01  REQ-RELA-SEQ-NO        PIC X(05).     *> 关联序号
+01  REQ-ROUTE-TYP-CD       PIC X(02).     *> 路由类型代码
+01  REQ-ROUTE-VAL          PIC X(20).     *> 路由值
+01  REQ-OPER-TELR-NO       PIC X(10).     *> 操作柜员号
+
+*> ========== 输出参数 ==========
+01  RESP-CODE              PIC X(06).
+01  RESP-MSG               PIC X(50).
+01  RESP-RECORD-COUNT      PIC 9(5).      *> 操作记录数
+
+PROCEDURE DIVISION 
+    USING REQ-TENANT-NO, REQ-CUST-NO, REQ-AFS-PRODT-NO,
+          REQ-BASE-PRODT-NO, REQ-MAIN-ACCT-NO, REQ-OPER-TYP-CD,
+          REQ-RELA-SEQ-NO, REQ-ROUTE-TYP-CD, REQ-ROUTE-VAL,
+          REQ-OPER-TELR-NO, RESP-CODE, RESP-MSG, RESP-RECORD-COUNT.
+
+MAIN-LOGIC.
+    *> 初始化
+    MOVE 'E99999' TO WS-RESP-CODE
+    MOVE 'PROCESSING ERROR' TO WS-RESP-MSG
+    MOVE 0 TO WS-RECORD-COUNT, RESP-RECORD-COUNT
+
+    *> 1) 参数基础校验
+    PERFORM VALIDATE-REQUIRED-FIELDS.
+    IF WS-RESP-CODE NOT = '000000'
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 2) 校验操作类型
+    EVALUATE REQ-OPER-TYP-CD
+       WHEN '01'  *> 新增
+          MOVE 'ADD' TO WS-OPER-TYPE
+       WHEN '02'  *> 修改
+          MOVE 'MOD' TO WS-OPER-TYPE
+       WHEN '03'  *> 删除
+          MOVE 'DEL' TO WS-OPER-TYPE
+       WHEN OTHER
+          MOVE 'E12196' TO WS-RESP-CODE
+          MOVE '非法操作标志' TO WS-RESP-MSG
+          GO TO EXIT-PROGRAM
+    END-EVALUATE.
+
+    *> 3) 开始事务
+    EXEC SQL START TRANSACTION END-EXEC
+    IF SQLCODE NOT = 0
+       MOVE 'E12001' TO WS-RESP-CODE
+       MOVE '事务启动失败' TO WS-RESP-MSG
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 4) 设置工作区值
+    MOVE REQ-TENANT-NO TO WS-TENANT-NO
+    MOVE REQ-CUST-NO TO WS-CUST-NO
+    MOVE REQ-AFS-PRODT-NO TO WS-AFS-PRODT-NO
+    MOVE REQ-BASE-PRODT-NO TO WS-BASE-PRODT-NO
+    MOVE REQ-MAIN-ACCT-NO TO WS-MAIN-ACCT-NO
+    MOVE REQ-OPER-TYP-CD TO WS-OPER-TYP-CD
+    MOVE REQ-RELA-SEQ-NO TO WS-RELA-SEQ-NO
+    MOVE REQ-ROUTE-TYP-CD TO WS-ROUTE-TYP-CD
+    MOVE REQ-ROUTE-VAL TO WS-ROUTE-VAL
+    MOVE REQ-OPER-TELR-NO TO WS-CRT-TELR-NO
+    MOVE REQ-OPER-TELR-NO TO WS-UPD-TELR-NO
+
+    *> 5) 根据操作类型执行相应操作
+    EVALUATE WS-OPER-TYPE
+       WHEN 'ADD'
+          PERFORM ADD-CUST-ACCT-INFO
+       WHEN 'MOD'
+          PERFORM MOD-CUST-ACCT-INFO
+       WHEN 'DEL'
+          PERFORM DEL-CUST-ACCT-INFO
+    END-EVALUATE.
+
+    IF WS-RESP-CODE NOT = '000000'
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 6) 提交事务
+    EXEC SQL COMMIT END-EXEC
+    IF SQLCODE NOT = 0
+       MOVE 'E12002' TO WS-RESP-CODE
+       MOVE '事务提交失败' TO WS-RESP-MSG
+       EXEC SQL ROLLBACK END-EXEC
+       GO TO EXIT-PROGRAM
+    END-IF.
+
+    *> 7) 成功返回
+    MOVE '000000' TO WS-RESP-CODE
+    EVALUATE WS-OPER-TYPE
+       WHEN 'ADD'
+          MOVE '客户账户路由信息新增成功' TO WS-RESP-MSG
+       WHEN 'MOD'
+          MOVE '客户账户路由信息修改成功' TO WS-RESP-MSG
+       WHEN 'DEL'
+          MOVE '客户账户路由信息删除成功' TO WS-RESP-MSG
+    END-EVALUATE.
+    MOVE WS-RECORD-COUNT TO RESP-RECORD-COUNT.
+
+EXIT-PROGRAM.
+    MOVE WS-RESP-CODE TO RESP-CODE
+    MOVE WS-RESP-MSG TO RESP-MSG
+    EXIT PROGRAM.
+
+*> 参数校验子程序
+VALIDATE-REQUIRED-FIELDS.
+    IF REQ-TENANT-NO = SPACES 
+       MOVE 'F20001' TO WS-RESP-CODE
+       MOVE '租户号不能为空' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    IF REQ-CUST-NO = SPACES 
+       MOVE 'F20002' TO WS-RESP-CODE
+       MOVE '客户编号不能为空' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    IF REQ-ROUTE-VAL = SPACES 
+       MOVE 'F20003' TO WS-RESP-CODE
+       MOVE '路由值不能为空' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    IF REQ-ROUTE-TYP-CD = SPACES 
+       MOVE 'F20004' TO WS-RESP-CODE
+       MOVE '路由类型不能为空' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    IF REQ-OPER-TYP-CD = SPACES 
+       MOVE 'F20005' TO WS-RESP-CODE
+       MOVE '操作类型不能为空' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    MOVE '000000' TO WS-RESP-CODE.
+
+*> 新增客户账户路由信息
+ADD-CUST-ACCT-INFO.
+    *> 检查记录是否已存在
+    EXEC SQL
+        SELECT COUNT(*)
+          INTO :WS-RECORD-COUNT
+          FROM CUST_ACCT_INFO
+         WHERE TENANT_NO = :WS-TENANT-NO
+           AND CUST_NO = :WS-CUST-NO
+           AND ROUTE_TYP_CD = :WS-ROUTE-TYP-CD
+           AND ROUTE_VAL = :WS-ROUTE-VAL
+           AND RELA_SEQ_NO = :WS-RELA-SEQ-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE = 0 AND WS-RECORD-COUNT > 0
+       MOVE 'F20006' TO WS-RESP-CODE
+       MOVE '客户账户路由信息已存在' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    *> 执行插入
+    EXEC SQL
+        INSERT INTO CUST_ACCT_INFO (
+            TENANT_NO, CUST_NO, AFS_PRODT_NO, BASE_PRODT_NO,
+            MAIN_ACCT_NO, OPER_TYP_CD, RELA_SEQ_NO, ROUTE_TYP_CD,
+            ROUTE_VAL, VALID_FLG, CRT_TELR_NO, UPD_TELR_NO,
+            CRT_TM, UPD_TM
+        ) VALUES (
+            :WS-TENANT-NO, :WS-CUST-NO, :WS-AFS-PRODT-NO, :WS-BASE-PRODT-NO,
+            :WS-MAIN-ACCT-NO, :WS-OPER-TYP-CD, :WS-RELA-SEQ-NO, :WS-ROUTE-TYP-CD,
+            :WS-ROUTE-VAL, :WS-VALID-FLG, :WS-CRT-TELR-NO, :WS-UPD-TELR-NO,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+    END-EXEC.
+
+    IF SQLCODE NOT = 0
+       MOVE 'E12003' TO WS-RESP-CODE
+       MOVE '新增客户账户路由信息失败' TO WS-RESP-MSG
+    ELSE
+       MOVE 1 TO WS-RECORD-COUNT
+    END-IF.
+
+*> 修改客户账户路由信息
+MOD-CUST-ACCT-INFO.
+    *> 检查记录是否存在
+    EXEC SQL
+        SELECT COUNT(*)
+          INTO :WS-RECORD-COUNT
+          FROM CUST_ACCT_INFO
+         WHERE TENANT_NO = :WS-TENANT-NO
+           AND CUST_NO = :WS-CUST-NO
+           AND ROUTE_TYP_CD = :WS-ROUTE-TYP-CD
+           AND ROUTE_VAL = :WS-ROUTE-VAL
+           AND RELA_SEQ_NO = :WS-RELA-SEQ-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE = 0 AND WS-RECORD-COUNT = 0
+       MOVE 'F20007' TO WS-RESP-CODE
+       MOVE '客户账户路由信息不存在' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    *> 执行更新
+    EXEC SQL
+        UPDATE CUST_ACCT_INFO
+           SET AFS_PRODT_NO = :WS-AFS-PRODT-NO,
+               BASE_PRODT_NO = :WS-BASE-PRODT-NO,
+               MAIN_ACCT_NO = :WS-MAIN-ACCT-NO,
+               OPER_TYP_CD = :WS-OPER-TYP-CD,
+               UPD_TELR_NO = :WS-UPD-TELR-NO,
+               UPD_TM = CURRENT_TIMESTAMP
+         WHERE TENANT_NO = :WS-TENANT-NO
+           AND CUST_NO = :WS-CUST-NO
+           AND ROUTE_TYP_CD = :WS-ROUTE-TYP-CD
+           AND ROUTE_VAL = :WS-ROUTE-VAL
+           AND RELA_SEQ_NO = :WS-RELA-SEQ-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE NOT = 0
+       MOVE 'E12004' TO WS-RESP-CODE
+       MOVE '修改客户账户路由信息失败' TO WS-RESP-MSG
+    ELSE
+       EXEC SQL
+           GET DIAGNOSTICS :WS-RECORD-COUNT = ROW_COUNT
+       END-EXEC
+    END-IF.
+
+*> 删除客户账户路由信息
+DEL-CUST-ACCT-INFO.
+    *> 检查记录是否存在
+    EXEC SQL
+        SELECT COUNT(*)
+          INTO :WS-RECORD-COUNT
+          FROM CUST_ACCT_INFO
+         WHERE TENANT_NO = :WS-TENANT-NO
+           AND CUST_NO = :WS-CUST-NO
+           AND ROUTE_TYP_CD = :WS-ROUTE-TYP-CD
+           AND ROUTE_VAL = :WS-ROUTE-VAL
+           AND RELA_SEQ_NO = :WS-RELA-SEQ-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE = 0 AND WS-RECORD-COUNT = 0
+       MOVE 'F20007' TO WS-RESP-CODE
+       MOVE '客户账户路由信息不存在' TO WS-RESP-MSG
+       EXIT PROGRAM
+    END-IF.
+
+    *> 执行删除（逻辑删除，设置有效标志为0）
+    EXEC SQL
+        UPDATE CUST_ACCT_INFO
+           SET VALID_FLG = '0',
+               UPD_TELR_NO = :WS-UPD-TELR-NO,
+               UPD_TM = CURRENT_TIMESTAMP
+         WHERE TENANT_NO = :WS-TENANT-NO
+           AND CUST_NO = :WS-CUST-NO
+           AND ROUTE_TYP_CD = :WS-ROUTE-TYP-CD
+           AND ROUTE_VAL = :WS-ROUTE-VAL
+           AND RELA_SEQ_NO = :WS-RELA-SEQ-NO
+           AND VALID_FLG = '1'
+    END-EXEC.
+
+    IF SQLCODE NOT = 0
+       MOVE 'E12005' TO WS-RESP-CODE
+       MOVE '删除客户账户路由信息失败' TO WS-RESP-MSG
+    ELSE
+       EXEC SQL
+           GET DIAGNOSTICS :WS-RECORD-COUNT = ROW_COUNT
+       END-EXEC
+    END-IF.
