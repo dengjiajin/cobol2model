@@ -7,3 +7,4 @@ server.log
 .idea/cobol2model.iml
 __pycache__/
 运行说明.md
+/.idea/cobol2modelnew.iml
