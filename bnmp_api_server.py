@@ -12,17 +12,17 @@ from typing import List, Dict, Any, Optional, Set
 from contextlib import contextmanager
 from urllib.parse import unquote
 
-from fastapi import FastAPI, HTTPException, Form, Query, Request
+from fastapi import FastAPI, HTTPException, Form, Query, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 import uvicorn
+import re
 
 # 配置日志
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,28 @@ DATABASE_PATH = os.environ.get("BNMP_DB_PATH", "./bnmp_model.db")
 app = FastAPI(
     title="BNMP 2.0 业务模型分析服务",
     description="提供从数据库读取业务建模元素和元素关系的RESTful API接口",
-    version="1.0.0"
+    version="1.0.0",
+    swagger_ui_parameters={"defaultModelsExpandDepth": -1},  # 可选：优化显示
 )
+
+# 👇 关键：替换 Swagger UI 的 CDN 为国内更稳定的源
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - Swagger UI",
+        swagger_js_url="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js",
+        swagger_css_url="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css",
+    )
+
+@app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
+async def swagger_ui_redirect():
+    return get_swagger_ui_oauth2_redirect_html()
 
 # CORS配置
 app.add_middleware(
@@ -54,23 +74,24 @@ OPTION_TYPE_MAP = {
     "流程": "PROCESS",
     "工作事项": "TASK",
     "任务": "TASK",
-    "步骤": "STEP"
+    "步骤": "STEP",
 }
 
 # 关系类型映射
 RELATION_TYPE_MAP = {
-    "业务实体(A)-实体属性(B)": "ENTITY_ATTRIBUTE", 
+    "业务实体(A)-实体属性(B)": "ENTITY_ATTRIBUTE",
     "业务实体-实体属性": "ENTITY_ATTRIBUTE",
     "流程-任务": "PROCESS_TASK",
     "任务-步骤": "TASK_STEP",
     "任务-任务": "TASK_TASK",
     "步骤-步骤": "STEP_STEP",
     "步骤-业务实体": "STEP_ENTITY",
-    "步骤-实体属性": "STEP_ATTRIBUTE"
+    "步骤-实体属性": "STEP_ATTRIBUTE",
 }
 
 
 # ==================== 数据库操作 ====================
+
 
 @contextmanager
 def get_db_connection():
@@ -100,43 +121,51 @@ def get_elements_by_type(element_type: str) -> List[Dict]:
     """根据类型获取元素"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
                        SELECT *
                        FROM bnmp_elements
                        WHERE element_type = ?
                        ORDER BY element_name
-                       """, (element_type,))
+                       """,
+            (element_type,),
+        )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
 
-
-def get_elements_by_cobol_and_type(cobol_file_name: Optional[str], element_type: Optional[str]) -> List[Dict]:
+def get_elements_by_cobol_and_type(
+    cobol_file_name: Optional[str], element_type: Optional[str]
+) -> List[Dict]:
     """按 cobol_file_name + element_type 组合查询元素；参数任意为空则不作为过滤条件（查全量/单条件/双条件）"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
                        SELECT *
                        FROM bnmp_elements
                        WHERE (? IS NULL OR cobol_file_name = ?)
                          AND (? IS NULL OR element_type = ?)
                        ORDER BY element_type, element_name
-                       """, (cobol_file_name, cobol_file_name, element_type, element_type))
+                       """,
+            (cobol_file_name, cobol_file_name, element_type, element_type),
+        )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
-
-
 
 
 def get_element_by_id(element_id: str) -> Optional[Dict]:
     """根据ID获取元素"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
                        SELECT *
                        FROM bnmp_elements
                        WHERE element_id = ?
-                       """, (element_id,))
+                       """,
+            (element_id,),
+        )
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -145,7 +174,8 @@ def get_relations_by_type(relation_type: str) -> List[Dict]:
     """根据类型获取关系"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
                        SELECT r.*,
                               s.element_name    as source_name,
                               s.element_name_cn as source_name_cn,
@@ -158,7 +188,9 @@ def get_relations_by_type(relation_type: str) -> List[Dict]:
                                 LEFT JOIN bnmp_elements t ON r.target_element_id = t.element_id
                        WHERE r.relation_type = ?
                        ORDER BY r.relation_order
-                       """, (relation_type,))
+                       """,
+            (relation_type,),
+        )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -230,7 +262,7 @@ def resolve_major_element_ids(major_list: List[Dict]) -> Set[str]:
                       AND (element_name = ? OR field_name = ?)
                       AND description = ?
                     """,
-                    (element_type, name, name, desc)
+                    (element_type, name, name, desc),
                 )
             else:
                 # 其他类型：用 element_name + description 精确定位
@@ -242,7 +274,7 @@ def resolve_major_element_ids(major_list: List[Dict]) -> Set[str]:
                       AND element_name = ?
                       AND description = ?
                     """,
-                    (element_type, name, desc)
+                    (element_type, name, desc),
                 )
 
             rows = cursor.fetchall()
@@ -253,6 +285,7 @@ def resolve_major_element_ids(major_list: List[Dict]) -> Set[str]:
 
 
 # ==================== 数据转换 ====================
+
 
 def format_element_for_response(elem: Dict, option: str = None) -> Dict:
     """将数据库元素格式化为API响应格式"""
@@ -296,11 +329,15 @@ def format_element_for_response(elem: Dict, option: str = None) -> Dict:
         result["cobol_snippet"] = elem.get("step_cobol_snippet")
 
     # 添加source字段（模拟从COBOL提取的来源信息）
-    result["source"] = [{
-        "extracted_source": elem.get("cobol_snippet") or elem.get("step_cobol_snippet") or "",
-        "type": "COBOL",
-        "name": elem.get("cobol_file_name") or ""
-    }]
+    result["source"] = [
+        {
+            "extracted_source": elem.get("cobol_snippet")
+            or elem.get("step_cobol_snippet")
+            or "",
+            "type": "COBOL",
+            "name": elem.get("cobol_file_name") or "",
+        }
+    ]
 
     return result
 
@@ -319,11 +356,15 @@ def get_option_from_relation_type(relation_type: str) -> str:
 
 # ==================== 请求模型 ====================
 
+
 class ConnectRequest(BaseModel):
     majorElements: str
     minorElements: Optional[str] = "[]"
     option: Optional[str] = None
+
+
 # ==================== API接口 ====================
+
 
 @app.get("/")
 async def root():
@@ -343,23 +384,28 @@ async def root():
             {
                 "path": "/api/py/extract/keyword",
                 "method": "GET",
-                "description": "元素提取接口 - 从数据库读取业务建模元素"
+                "description": "元素提取接口 - 从数据库读取业务建模元素",
             },
             {
                 "path": "/api/py/extract/keyword2",
                 "method": "GET",
-                "description": "元素提取接口2 - cobol_file_name + option 组合查询"
+                "description": "元素提取接口2 - cobol_file_name + option 组合查询",
             },
             {
                 "path": "/api/py/generate/connect",
                 "method": "POST",
-                "description": "关系生成接口 - 从数据库读取元素关系"
-            }
+                "description": "关系生成接口 - 从数据库读取元素关系",
+            },
+            {
+                "path": "/api/cobol/to-markdown",
+                "method": "POST",
+                "description": "COBOL转Markdown接口 - 上传COBOL文件返回Markdown文档",
+            },
         ],
         "supported_options": {
             "element_types": list(OPTION_TYPE_MAP.keys()),
-            "relation_types": list(RELATION_TYPE_MAP.keys())
-        }
+            "relation_types": list(RELATION_TYPE_MAP.keys()),
+        },
     }
 
 
@@ -373,30 +419,40 @@ async def api_info():
             {
                 "path": "/api/py/extract/keyword",
                 "method": "GET",
-                "description": "元素提取接口 - 从数据库读取业务建模元素"
+                "description": "元素提取接口 - 从数据库读取业务建模元素",
             },
             {
                 "path": "/api/py/extract/keyword2",
                 "method": "GET",
-                "description": "元素提取接口2 - cobol_file_name + option 组合查询"
+                "description": "元素提取接口2 - cobol_file_name + option 组合查询",
             },
             {
                 "path": "/api/py/generate/connect",
                 "method": "POST",
-                "description": "关系生成接口 - 从数据库读取元素关系"
-            }
+                "description": "关系生成接口 - 从数据库读取元素关系",
+            },
+            {
+                "path": "/api/cobol/to-markdown",
+                "method": "POST",
+                "description": "COBOL转Markdown接口 - 上传COBOL文件返回Markdown文档",
+            },
         ],
         "supported_options": {
             "element_types": list(OPTION_TYPE_MAP.keys()),
-            "relation_types": list(RELATION_TYPE_MAP.keys())
-        }
+            "relation_types": list(RELATION_TYPE_MAP.keys()),
+        },
     }
 
 
 @app.get("/api/py/extract/keyword")
 async def extract_keyword(
-        filePath: str = Query(None, description="COBOL代码文件路径（可选，仅用于日志记录）"),
-        option: str = Query(None, description="支持的选项类型：业务实体、实体属性、流程、任务、步骤。为空则返回所有类型")
+    filePath: str = Query(
+        None, description="COBOL代码文件路径（可选，仅用于日志记录）"
+    ),
+    option: str = Query(
+        None,
+        description="支持的选项类型：业务实体、实体属性、流程、任务、步骤。为空则返回所有类型",
+    ),
 ):
     """
     元素提取接口（GET）
@@ -413,8 +469,7 @@ async def extract_keyword(
     # 检查数据库是否存在
     if not os.path.exists(DATABASE_PATH):
         raise HTTPException(
-            status_code=500,
-            detail=f"数据库文件不存在: {DATABASE_PATH}"
+            status_code=500, detail=f"数据库文件不存在: {DATABASE_PATH}"
         )
 
     try:
@@ -423,7 +478,7 @@ async def extract_keyword(
             if option not in OPTION_TYPE_MAP:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}"
+                    detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}",
                 )
 
             # 获取指定类型的元素
@@ -451,8 +506,11 @@ async def extract_keyword(
 
 @app.get("/api/py/extract/keyword2")
 async def extract_keyword2(
-        fileName: str = Query(None, description="COBOL文件名（可选）。不传则不按文件过滤"),
-        option: str = Query(None, description="选项（可选）。支持：业务实体、实体属性、流程、工作事项、步骤。不传则不按类型过滤")
+    fileName: str = Query(None, description="COBOL文件名（可选）。不传则不按文件过滤"),
+    option: str = Query(
+        None,
+        description="选项（可选）。支持：业务实体、实体属性、流程、工作事项、步骤。不传则不按类型过滤",
+    ),
 ):
     """
     元素提取接口（GET）- keyword2
@@ -469,8 +527,7 @@ async def extract_keyword2(
     # 检查数据库是否存在
     if not os.path.exists(DATABASE_PATH):
         raise HTTPException(
-            status_code=500,
-            detail=f"数据库文件不存在: {DATABASE_PATH}"
+            status_code=500, detail=f"数据库文件不存在: {DATABASE_PATH}"
         )
 
     try:
@@ -484,16 +541,17 @@ async def extract_keyword2(
             if not elements:
                 # 如果没有直接匹配的流程，尝试间接关联查询
                 use_indirect_query = True
-        
+
         if use_indirect_query:
             # 使用间接关联查询：COBOL文件 → 流程 → 任务 → 步骤 → 实体/属性
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                
+
                 # 构建查询条件
                 if option:
                     target_element_type = OPTION_TYPE_MAP[option]
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                                    SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
                                           e4.description, e4.description_cn, e4.table_name, e4.field_name, 
                                           e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
@@ -507,10 +565,13 @@ async def extract_keyword2(
                                    JOIN bnmp_elements e4 ON r3.target_element_id = e4.element_id
                                    WHERE e1.cobol_file_name = ? AND e4.element_type = ?
                                    ORDER BY e4.element_type, e4.element_name
-                                   """, (fileName, target_element_type))
+                                   """,
+                        (fileName, target_element_type),
+                    )
                 else:
                     # 查询所有相关实体和属性
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                                    SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
                                           e4.description, e4.description_cn, e4.table_name, e4.field_name, 
                                           e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
@@ -524,11 +585,13 @@ async def extract_keyword2(
                                    JOIN bnmp_elements e4 ON r3.target_element_id = e4.element_id
                                    WHERE e1.cobol_file_name = ?
                                    ORDER BY e4.element_type, e4.element_name
-                                   """, (fileName,))
-                
+                                   """,
+                        (fileName,),
+                    )
+
                 rows = cursor.fetchall()
                 result = []
-                
+
                 for row in rows:
                     elem_dict = dict(row)
                     # 使用format_element_for_response格式化结果
@@ -537,7 +600,7 @@ async def extract_keyword2(
                     else:
                         formatted = format_element_for_response(elem_dict)
                     result.append(formatted)
-                
+
                 logger.info(f"间接关联查询完成(keyword2): 共{len(result)}个元素")
                 return result
         else:
@@ -547,7 +610,7 @@ async def extract_keyword2(
                 if option not in OPTION_TYPE_MAP:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}"
+                        detail=f"不支持的选项类型: {option}。支持的类型: {list(OPTION_TYPE_MAP.keys())}",
                     )
                 element_type = OPTION_TYPE_MAP[option]
 
@@ -555,7 +618,9 @@ async def extract_keyword2(
 
             # 格式化结果：如果传了 option，用它作为 type；否则按 element_type 反推
             if option:
-                result = [format_element_for_response(elem, option) for elem in elements]
+                result = [
+                    format_element_for_response(elem, option) for elem in elements
+                ]
             else:
                 result = [format_element_for_response(elem) for elem in elements]
 
@@ -569,11 +634,8 @@ async def extract_keyword2(
         raise HTTPException(status_code=500, detail=f"元素提取失败: {str(e)}")
 
 
-
 @app.post("/api/py/generate/connect")
-async def generate_connect(
-        payload: ConnectRequest
-):
+async def generate_connect(payload: ConnectRequest):
     """
     关系生成接口
 
@@ -603,15 +665,14 @@ async def generate_connect(
     # 检查数据库是否存在
     if not os.path.exists(DATABASE_PATH):
         raise HTTPException(
-            status_code=500,
-            detail=f"数据库文件不存在: {DATABASE_PATH}"
+            status_code=500, detail=f"数据库文件不存在: {DATABASE_PATH}"
         )
 
     # 验证连接选项（如果提供了option）
     if option and option not in RELATION_TYPE_MAP:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的连接选项: {option}。支持的选项: {list(RELATION_TYPE_MAP.keys())}"
+            detail=f"不支持的连接选项: {option}。支持的选项: {list(RELATION_TYPE_MAP.keys())}",
         )
 
     # 解析JSON参数
@@ -655,7 +716,7 @@ async def generate_connect(
                 "type": get_option_from_type(rel.get("target_type")),
                 "id": target_id,
                 "code": rel.get("target_name"),  # 新增字段，值等于 name
-                "name": rel.get("target_name")
+                "name": rel.get("target_name"),
             }
             if target_id:
                 target_elements_set[target_id] = target_elem  # 自动去重
@@ -671,11 +732,104 @@ async def generate_connect(
     except Exception as e:
         logger.error(f"关系生成失败: {e}")
         raise HTTPException(status_code=500, detail=f"关系生成失败: {str(e)}")
+
+
+# ==================== COBOL转Markdown功能 ====================
+
+
+def cobol_to_markdown(cobol_content: str) -> str:
+    """将COBOL代码转换为Markdown格式"""
+    lines = cobol_content.split("\n")
+    markdown_lines = []
+
+    markdown_lines.append("# COBOL程序文档\n")
+    markdown_lines.append("```cobol\n")
+
+    in_paragraph = False
+    in_code = False
+
+    for i, line in enumerate(lines, 1):
+        stripped = line.lstrip()
+        if not stripped:
+            markdown_lines.append(line)
+            continue
+
+        indent = len(line) - len(stripped)
+        prefix = " " * indent
+
+        if stripped.startswith("*>"):
+            if not in_paragraph:
+                markdown_lines.append("\n")
+            markdown_lines.append(f"{prefix}{stripped}")
+            in_paragraph = True
+        elif stripped.startswith("IDENTIFICATION"):
+            markdown_lines.append(f"\n## {stripped}\n")
+            in_paragraph = False
+            in_code = True
+        elif stripped.startswith("ENVIRONMENT"):
+            markdown_lines.append(f"\n## {stripped}\n")
+            in_paragraph = False
+        elif stripped.startswith("DATA"):
+            markdown_lines.append(f"\n## {stripped}\n")
+            in_paragraph = False
+        elif stripped.startswith("PROCEDURE"):
+            markdown_lines.append(f"\n## {stripped}\n")
+            in_paragraph = False
+        elif stripped.startswith("PROGRAM-ID."):
+            program_name = stripped.replace("PROGRAM-ID.", "").strip().rstrip(".")
+            markdown_lines.append(f"### 程序名称: {program_name}\n")
+        elif stripped.startswith("LINKAGE"):
+            markdown_lines.append(f"\n### 参数定义\n")
+        elif stripped.startswith("WORKING-STORAGE"):
+            markdown_lines.append(f"\n### 变量定义\n")
+        elif re.match(r"^\d+\s+[A-Z][A-Z-]+", stripped):
+            procedure_name = re.sub(r"^\d+\s+", "", stripped).strip()
+            markdown_lines.append(f"\n#### {procedure_name}\n")
+        else:
+            markdown_lines.append(line)
+            in_paragraph = False
+
+    markdown_lines.append("\n```")
+    return "\n".join(markdown_lines)
+
+
+@app.post("/api/cobol/to-markdown")
+async def cobol_to_markdown_upload(file: UploadFile = File(...)):
+    """
+    COBOL转Markdown接口
+
+    上传COBOL文件，返回Markdown格式文档供下载
+
+    - **file**: COBOL文件（.cbl或.cob）
+
+    返回：Markdown文件
+    """
+    try:
+        content = await file.read()
+        cobol_text = content.decode("utf-8", errors="ignore")
+
+        markdown_content = cobol_to_markdown(cobol_text)
+
+        filename = file.filename.rsplit(".", 1)[0] if file.filename else "output"
+
+        return Response(
+            content=markdown_content,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f"attachment; filename={filename}.md"},
+        )
+    except Exception as e:
+        logger.error(f"COBOL转Markdown失败: {e}")
+        raise HTTPException(status_code=500, detail=f"转换失败: {str(e)}")
+
+
 # ==================== 辅助API接口 ====================
+
 
 @app.get("/api/db/elements")
 async def get_db_elements(
-        element_type: str = Query(None, description="元素类型：ENTITY、ATTRIBUTE、PROCESS、TASK、STEP")
+    element_type: str = Query(
+        None, description="元素类型：ENTITY、ATTRIBUTE、PROCESS、TASK、STEP"
+    ),
 ):
     """
     直接查询数据库元素（辅助接口）
@@ -691,9 +845,7 @@ async def get_db_elements(
 
 
 @app.get("/api/db/relations")
-async def get_db_relations(
-        relation_type: str = Query(None, description="关系类型")
-):
+async def get_db_relations(relation_type: str = Query(None, description="关系类型")):
     """
     直接查询数据库关系（辅助接口）
     """
@@ -722,7 +874,9 @@ async def get_db_stats():
                            FROM bnmp_elements
                            GROUP BY element_type
                            """)
-            element_stats = {row["element_type"]: row["count"] for row in cursor.fetchall()}
+            element_stats = {
+                row["element_type"]: row["count"] for row in cursor.fetchall()
+            }
 
             # 统计关系数量
             cursor.execute("""
@@ -730,14 +884,16 @@ async def get_db_stats():
                            FROM bnmp_element_relations
                            GROUP BY relation_type
                            """)
-            relation_stats = {row["relation_type"]: row["count"] for row in cursor.fetchall()}
+            relation_stats = {
+                row["relation_type"]: row["count"] for row in cursor.fetchall()
+            }
 
             return {
                 "database_path": DATABASE_PATH,
                 "elements": element_stats,
                 "relations": relation_stats,
                 "total_elements": sum(element_stats.values()),
-                "total_relations": sum(relation_stats.values())
+                "total_relations": sum(relation_stats.values()),
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -761,24 +917,21 @@ if __name__ == "__main__":
     os.environ["BNMP_DB_PATH"] = args.db
 
     print(f"""
-╔══════════════════════════════════════════════════════════════╗
-║           BNMP 2.0 业务模型分析服务                          ║
-╠══════════════════════════════════════════════════════════════╣
-║  服务地址: http://{args.host}:{args.port}                           ║
-║  数据库: {args.db:<50} ║
-╠══════════════════════════════════════════════════════════════╣
-║  API接口:                                                    ║
-║  GET  /api/py/extract/keyword  - 元素提取                    ║
-║  GET  /api/py/extract/keyword2 - 元素提取2                   ║
-║  POST /api/py/generate/connect - 关系生成                    ║
-║  GET  /api/db/elements         - 查询元素                    ║
-║  GET  /api/db/relations        - 查询关系                    ║
-║  GET  /api/db/stats            - 数据库统计                  ║
-╚══════════════════════════════════════════════════════════════╝
+ ╔══════════════════════════════════════════════════════════════╗
+ ║           BNMP 2.0 业务模型分析服务                          ║
+ ╠══════════════════════════════════════════════════════════════╣
+ ║  服务地址: http://{args.host}:{args.port}                           ║
+ ║  数据库: {args.db:<50} ║
+ ╠══════════════════════════════════════════════════════════════╣
+ ║  API接口:                                                    ║
+ ║  GET  /api/py/extract/keyword  - 元素提取                    ║
+ ║  GET  /api/py/extract/keyword2 - 元素提取2                   ║
+ ║  POST /api/py/generate/connect - 关系生成                    ║
+ ║  POST /api/cobol/to-markdown   - COBOL转Markdown             ║
+ ║  GET  /api/db/elements         - 查询元素                    ║
+ ║  GET  /api/db/relations        - 查询关系                    ║
+ ║  GET  /api/db/stats            - 数据库统计                  ║
+ ╚══════════════════════════════════════════════════════════════╝
     """)
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port
-    )
+    uvicorn.run(app, host=args.host, port=args.port)

@@ -5,3 +5,5 @@ server.log
 .idea/misc.xml
 .idea/modules.xml
 .idea/cobol2model.iml
+__pycache__/
+运行说明.md
