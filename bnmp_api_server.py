@@ -552,10 +552,10 @@ async def extract_keyword2(
                     target_element_type = OPTION_TYPE_MAP[option]
                     cursor.execute(
                         """
-                                   SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
-                                          e4.description, e4.description_cn, e4.table_name, e4.field_name, 
-                                          e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
-                                          e4.parent_entity_id, e1.cobol_file_name
+                                     SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
+                                            e4.description, e4.description_cn, e4.entity_summary, e4.table_name, e4.field_name, 
+                                            e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
+                                            e4.parent_entity_id, e4.cobol_snippet, e4.step_cobol_snippet, e1.cobol_file_name
                                    FROM bnmp_elements e1
                                    JOIN bnmp_element_relations r1 ON e1.element_id = r1.source_element_id AND r1.relation_type = 'PROCESS_TASK'
                                    JOIN bnmp_elements e2 ON r1.target_element_id = e2.element_id
@@ -572,10 +572,10 @@ async def extract_keyword2(
                     # 查询所有相关实体和属性
                     cursor.execute(
                         """
-                                   SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
-                                          e4.description, e4.description_cn, e4.table_name, e4.field_name, 
-                                          e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
-                                          e4.parent_entity_id, e1.cobol_file_name
+                                     SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
+                                            e4.description, e4.description_cn, e4.entity_summary, e4.table_name, e4.field_name, 
+                                            e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
+                                            e4.parent_entity_id, e4.cobol_snippet, e4.step_cobol_snippet, e1.cobol_file_name
                                    FROM bnmp_elements e1
                                    JOIN bnmp_element_relations r1 ON e1.element_id = r1.source_element_id AND r1.relation_type = 'PROCESS_TASK'
                                    JOIN bnmp_elements e2 ON r1.target_element_id = e2.element_id
