@@ -738,59 +738,8 @@ async def generate_connect(payload: ConnectRequest):
 
 
 def cobol_to_markdown(cobol_content: str) -> str:
-    """将COBOL代码转换为Markdown格式"""
-    lines = cobol_content.split("\n")
-    markdown_lines = []
-
-    markdown_lines.append("# COBOL程序文档\n")
-    markdown_lines.append("```cobol\n")
-
-    in_paragraph = False
-    in_code = False
-
-    for i, line in enumerate(lines, 1):
-        stripped = line.lstrip()
-        if not stripped:
-            markdown_lines.append(line)
-            continue
-
-        indent = len(line) - len(stripped)
-        prefix = " " * indent
-
-        if stripped.startswith("*>"):
-            if not in_paragraph:
-                markdown_lines.append("\n")
-            markdown_lines.append(f"{prefix}{stripped}")
-            in_paragraph = True
-        elif stripped.startswith("IDENTIFICATION"):
-            markdown_lines.append(f"\n## {stripped}\n")
-            in_paragraph = False
-            in_code = True
-        elif stripped.startswith("ENVIRONMENT"):
-            markdown_lines.append(f"\n## {stripped}\n")
-            in_paragraph = False
-        elif stripped.startswith("DATA"):
-            markdown_lines.append(f"\n## {stripped}\n")
-            in_paragraph = False
-        elif stripped.startswith("PROCEDURE"):
-            markdown_lines.append(f"\n## {stripped}\n")
-            in_paragraph = False
-        elif stripped.startswith("PROGRAM-ID."):
-            program_name = stripped.replace("PROGRAM-ID.", "").strip().rstrip(".")
-            markdown_lines.append(f"### 程序名称: {program_name}\n")
-        elif stripped.startswith("LINKAGE"):
-            markdown_lines.append(f"\n### 参数定义\n")
-        elif stripped.startswith("WORKING-STORAGE"):
-            markdown_lines.append(f"\n### 变量定义\n")
-        elif re.match(r"^\d+\s+[A-Z][A-Z-]+", stripped):
-            procedure_name = re.sub(r"^\d+\s+", "", stripped).strip()
-            markdown_lines.append(f"\n#### {procedure_name}\n")
-        else:
-            markdown_lines.append(line)
-            in_paragraph = False
-
-    markdown_lines.append("\n```")
-    return "\n".join(markdown_lines)
+    """将COBOL代码原样返回为Markdown内容（不添加额外文本）"""
+    return cobol_content
 
 
 @app.post("/api/cobol/to-markdown")
