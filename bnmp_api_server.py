@@ -555,7 +555,7 @@ async def extract_keyword2(
                                      SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
                                             e4.description, e4.description_cn, e4.entity_summary, e4.table_name, e4.field_name, 
                                             e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
-                                            e4.parent_entity_id, e4.cobol_snippet, e4.step_cobol_snippet, e1.cobol_file_name
+                                            e4.parent_entity_id, COALESCE(efs.cobol_snippet, e4.cobol_snippet) AS cobol_snippet, e4.step_cobol_snippet, e1.cobol_file_name
                                    FROM bnmp_elements e1
                                    JOIN bnmp_element_relations r1 ON e1.element_id = r1.source_element_id AND r1.relation_type = 'PROCESS_TASK'
                                    JOIN bnmp_elements e2 ON r1.target_element_id = e2.element_id
@@ -563,6 +563,7 @@ async def extract_keyword2(
                                    JOIN bnmp_elements e3 ON r2.target_element_id = e3.element_id
                                    JOIN bnmp_element_relations r3 ON e3.element_id = r3.source_element_id AND r3.relation_type IN ('STEP_ENTITY', 'STEP_ATTRIBUTE')
                                    JOIN bnmp_elements e4 ON r3.target_element_id = e4.element_id
+                                     LEFT JOIN bnmp_element_file_snippets efs ON efs.element_id = e4.element_id AND efs.cobol_file_name = e1.cobol_file_name
                                    WHERE e1.cobol_file_name = ? AND e4.element_type = ?
                                    ORDER BY e4.element_type, e4.element_name
                                    """,
@@ -575,7 +576,7 @@ async def extract_keyword2(
                                      SELECT DISTINCT e4.element_id, e4.element_type, e4.element_name, e4.element_name_cn, 
                                             e4.description, e4.description_cn, e4.entity_summary, e4.table_name, e4.field_name, 
                                             e4.field_type, e4.field_length, e4.field_rules, e4.foreign_key_ref,
-                                            e4.parent_entity_id, e4.cobol_snippet, e4.step_cobol_snippet, e1.cobol_file_name
+                                            e4.parent_entity_id, COALESCE(efs.cobol_snippet, e4.cobol_snippet) AS cobol_snippet, e4.step_cobol_snippet, e1.cobol_file_name
                                    FROM bnmp_elements e1
                                    JOIN bnmp_element_relations r1 ON e1.element_id = r1.source_element_id AND r1.relation_type = 'PROCESS_TASK'
                                    JOIN bnmp_elements e2 ON r1.target_element_id = e2.element_id
@@ -583,6 +584,7 @@ async def extract_keyword2(
                                    JOIN bnmp_elements e3 ON r2.target_element_id = e3.element_id
                                    JOIN bnmp_element_relations r3 ON e3.element_id = r3.source_element_id AND r3.relation_type IN ('STEP_ENTITY', 'STEP_ATTRIBUTE')
                                    JOIN bnmp_elements e4 ON r3.target_element_id = e4.element_id
+                                     LEFT JOIN bnmp_element_file_snippets efs ON efs.element_id = e4.element_id AND efs.cobol_file_name = e1.cobol_file_name
                                    WHERE e1.cobol_file_name = ?
                                    ORDER BY e4.element_type, e4.element_name
                                    """,

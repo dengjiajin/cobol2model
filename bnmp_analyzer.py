@@ -82,6 +82,20 @@ def init_database(db_path):
     )
     """)
 
+
+    # 创建元素-文件代码片段表
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bnmp_element_file_snippets (
+        snippet_id TEXT PRIMARY KEY,
+        element_id TEXT NOT NULL,
+        cobol_file_name TEXT NOT NULL,
+        cobol_snippet TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(element_id, cobol_file_name),
+        FOREIGN KEY (element_id) REFERENCES bnmp_elements(element_id)
+    )
+    """)
     # 创建索引
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_element_type ON bnmp_elements(element_type)"
@@ -96,6 +110,10 @@ def init_database(db_path):
         "CREATE INDEX IF NOT EXISTS idx_target_element ON bnmp_element_relations(target_element_id)"
     )
 
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_snippet_element_file ON bnmp_element_file_snippets(element_id, cobol_file_name)"
+    )
     conn.commit()
     return conn
 
@@ -2207,6 +2225,44 @@ def append_cobol_snippet(cursor, element_id: str, snippet: str) -> None:
     )
 
 
+def append_file_snippet(cursor, element_id: str, cobol_file_name: str, snippet: str) -> None:
+    """为元素追加指定文件的COBOL代码片段（去重）"""
+    if not snippet or not cobol_file_name:
+        return
+
+    cursor.execute(
+        """
+        SELECT cobol_snippet FROM bnmp_element_file_snippets
+        WHERE element_id = ? AND cobol_file_name = ?
+        """,
+        (element_id, cobol_file_name),
+    )
+    row = cursor.fetchone()
+    current = row[0] if row else None
+    if not current:
+        cursor.execute(
+            """
+            INSERT INTO bnmp_element_file_snippets
+            (snippet_id, element_id, cobol_file_name, cobol_snippet)
+            VALUES (?, ?, ?, ?)
+            """,
+            (generate_id(), element_id, cobol_file_name, snippet),
+        )
+        return
+
+    if snippet in current:
+        return
+
+    cursor.execute(
+        """
+        UPDATE bnmp_element_file_snippets
+        SET cobol_snippet = ?
+        WHERE element_id = ? AND cobol_file_name = ?
+        """,
+        (f"{current}\n\n{snippet}", element_id, cobol_file_name),
+    )
+
+
 def extract_sql_blocks(cobol_content: str) -> list:
     """提取COBOL中的 EXEC SQL 代码块"""
     if not cobol_content:
@@ -2364,6 +2420,10 @@ def extract_task_code_snippet(
             match = re.search(r"^\s*PERFORM\s+([A-Z0-9-]+)", line, re.IGNORECASE)
             if match:
                 perform_target = match.group(1)
+                if perform_target.upper() in {"VARYING", "UNTIL"}:
+                    if stripped and not stripped.startswith("*"):
+                        snippet_lines.append(line)
+                    continue
                 found_perform = True
                 # 跳过PERFORM行，查找被调用的段落
                 continue
@@ -2425,10 +2485,11 @@ def extract_step_code_snippet(
     operation_type: str = None,
     operation_table: str = None,
     operation_fields: list = None,
+    step_logic: str = None,
 ) -> str:
     """从COBOL代码中提取步骤的代码片段
 
-    优先按 EXEC SQL 块匹配操作类型和表名，必要时回退到字段命中段落。
+    优先按 EXEC SQL 块匹配操作类型和表名，必要时回退到字段或逻辑命中段落。
     """
     if not cobol_content:
         return ""
@@ -2470,6 +2531,51 @@ def extract_step_code_snippet(
             )
         return bool(op_ok and table_ok)
 
+    def extract_by_tokens(tokens, prefer_if: bool = False):
+        if not tokens:
+            return ""
+        paragraph_starts = []
+        procedure_start = 0
+        for i, line in enumerate(lines):
+            if line.strip().upper().startswith("PROCEDURE DIVISION"):
+                procedure_start = i
+                break
+        for i, line in enumerate(lines):
+            if i < procedure_start:
+                continue
+            if re.match(r"^[A-Z][A-Z0-9-]+\.", line.strip()):
+                paragraph_starts.append(i)
+        if not paragraph_starts:
+            return ""
+        best_start = None
+        best_end = None
+        best_score = 0
+        for idx, start in enumerate(paragraph_starts):
+            end = (
+                paragraph_starts[idx + 1]
+                if idx + 1 < len(paragraph_starts)
+                else len(lines)
+            )
+            block_lines = lines[start + 1 : end]
+            block_text = "\n".join(block_lines)
+            score = sum(1 for token in tokens if token in block_text)
+            if prefer_if and score:
+                if_hits = 0
+                for line in block_lines:
+                    if "IF" in line and any(token in line for token in tokens):
+                        if_hits += 1
+                score += if_hits * 2
+            if score > best_score:
+                best_score = score
+                best_start = start
+                best_end = end
+        if best_start is not None and best_score > 0:
+            snippet = "\n".join(lines[best_start + 1 : best_end]).strip()
+            if snippet:
+                return snippet
+        return ""
+
+
     if sql_blocks and (operation_type or operation_table):
         for block_lines in sql_blocks:
             if block_matches(block_lines):
@@ -2510,33 +2616,61 @@ def extract_step_code_snippet(
             if len(token) < 3:
                 continue
             field_tokens.append(token)
-        if field_tokens:
-            paragraph_starts = []
-            for i, line in enumerate(lines):
-                if re.match(r"^[A-Z][A-Z0-9-]+\.", line.strip()):
-                    paragraph_starts.append(i)
+        snippet = extract_by_tokens(field_tokens)
+        if snippet:
+            return snippet
 
-            best_start = None
-            best_end = None
-            best_score = 0
-            for idx, start in enumerate(paragraph_starts):
-                end = (
-                    paragraph_starts[idx + 1]
-                    if idx + 1 < len(paragraph_starts)
-                    else len(lines)
-                )
-                block_text = "\n".join(lines[start + 1 : end])
-                score = sum(1 for token in field_tokens if token in block_text)
-                if score > best_score:
-                    best_score = score
-                    best_start = start
-                    best_end = end
-            if best_start is not None and best_score > 0:
-                snippet = "\n".join(lines[best_start + 1 : best_end]).strip()
-                if snippet:
-                    return snippet
+    if step_logic:
+        logic_tokens = re.findall(r"[A-Z][A-Z0-9-]{2,}", step_logic)
+        snippet = extract_by_tokens(logic_tokens, prefer_if=True)
+        if snippet:
+            return snippet
 
     return ""
+
+
+def extract_paragraph_by_tokens(cobol_content: str, tokens: list) -> str:
+    """按关键字在段落中查找最匹配的代码片段"""
+    if not cobol_content or not tokens:
+        return ""
+
+    lines = cobol_content.split("\n")
+    paragraph_starts = []
+    procedure_start = 0
+    for i, line in enumerate(lines):
+        if line.strip().upper().startswith("PROCEDURE DIVISION"):
+            procedure_start = i
+            break
+    for i, line in enumerate(lines):
+        if i < procedure_start:
+            continue
+        if re.match(r"^[A-Z][A-Z0-9-]+\.", line.strip()):
+            paragraph_starts.append(i)
+    if not paragraph_starts:
+        return ""
+
+    best_start = None
+    best_end = None
+    best_score = 0
+    for idx, start in enumerate(paragraph_starts):
+        end = (
+            paragraph_starts[idx + 1]
+            if idx + 1 < len(paragraph_starts)
+            else len(lines)
+        )
+        block_text = "\n".join(lines[start + 1 : end])
+        score = sum(1 for token in tokens if token in block_text)
+        if score > best_score:
+            best_score = score
+            best_start = start
+            best_end = end
+
+    if best_start is None or best_score == 0:
+        return ""
+
+    snippet = "\n".join(lines[best_start + 1 : best_end]).strip()
+    return snippet
+
 
 def extract_process_code_snippet(cobol_content: str) -> str:
     """提取整个流程的代码片段（从 PROCEDURE DIVISION 开始）"""
@@ -2772,6 +2906,7 @@ def save_processes(conn, entity_ids):
                     operation_type,
                     operation_table,
                     operation_fields,
+                    step["logic"],
                 )
                 if not step_snippet and operation_table:
                     step_snippet = table_snippet_map.get(operation_table, "")
@@ -2782,6 +2917,9 @@ def save_processes(conn, entity_ids):
                         ):
                             step_snippet = block
                             break
+
+                if not step_snippet and task_snippet:
+                    step_snippet = task_snippet
 
                 # 插入步骤
                 cursor.execute(
@@ -2866,6 +3004,7 @@ def save_processes(conn, entity_ids):
 
 
                         append_cobol_snippet(cursor, entity_id, step_snippet)
+                        append_file_snippet(cursor, entity_id, process["cobol_file"], step_snippet)
 
                         # 创建步骤与属性的关联
                         for field in operation["fields"]:
@@ -2898,10 +3037,51 @@ def save_processes(conn, entity_ids):
 
 
                                 append_cobol_snippet(cursor, result[0], step_snippet)
+                                append_file_snippet(cursor, result[0], process["cobol_file"], step_snippet)
 
                 prev_step_id = step_id
 
             prev_task_id = task_id
+
+    # 补齐缺失的属性代码片段（按关联文件）
+    cursor.execute(
+        """
+        SELECT element_id, field_name, parent_entity_id
+        FROM bnmp_elements
+        WHERE element_type = 'ATTRIBUTE'
+          AND (cobol_snippet IS NULL OR TRIM(cobol_snippet) = '')
+        """
+    )
+    missing_attrs = cursor.fetchall()
+    if missing_attrs:
+        cursor.execute(
+            """
+            SELECT DISTINCT r.target_element_id, s.cobol_file_name
+            FROM bnmp_element_relations r
+            JOIN bnmp_elements s ON r.source_element_id = s.element_id
+            WHERE r.relation_type = 'STEP_ENTITY'
+            """
+        )
+        entity_files = {}
+        for entity_id, cobol_file in cursor.fetchall():
+            if cobol_file:
+                entity_files.setdefault(entity_id, set()).add(cobol_file)
+
+        cobol_cache = {}
+        for attr_id, field_name, parent_entity_id in missing_attrs:
+            token = field_name.replace("_", "-")
+            if len(token) < 3:
+                continue
+            for cobol_file in entity_files.get(parent_entity_id, []):
+                cobol_content = cobol_cache.get(cobol_file)
+                if cobol_content is None:
+                    cobol_path = os.path.join(cobol_dir, cobol_file)
+                    cobol_content = read_cobol_file(cobol_path)
+                    cobol_cache[cobol_file] = cobol_content
+                snippet = extract_paragraph_by_tokens(cobol_content, [token])
+                if snippet:
+                    append_cobol_snippet(cursor, attr_id, snippet)
+                    append_file_snippet(cursor, attr_id, cobol_file, snippet)
 
     conn.commit()
 
@@ -2970,7 +3150,7 @@ def print_statistics(conn):
 def main():
     """主函数"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(script_dir, "bnmp_model_v3_new.db")
+    db_path = os.path.join(script_dir, "bnmp_model_v5.db")
 
     print(f"脚本所在目录: {script_dir}")
     print(f"数据库路径: {db_path}")
